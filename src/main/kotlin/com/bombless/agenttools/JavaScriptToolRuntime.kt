@@ -56,7 +56,7 @@ class JavaScriptToolRuntime(
                 val assertFn = object : BaseFunction() {
                     override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any>): Any {
                         if (args.isEmpty() || !Context.toBoolean(args[0])) {
-                            throw IllegalStateException(args.getOrNull(1)?.let(Context::toString) ?: "Assertion failed")
+                            throw IllegalStateException(if (args.size > 1) Context.toString(args[1]) else null ?: "Assertion failed")
                         }
                         return Undefined.instance
                     }
