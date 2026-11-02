@@ -3,12 +3,13 @@ package com.bombless.agenttools
 import org.mozilla.javascript.BaseFunction
 import org.mozilla.javascript.Context
 import org.mozilla.javascript.ContextFactory
+import org.mozilla.javascript.Function
 import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
 import org.mozilla.javascript.Undefined
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Small, host-neutral Rhino sandbox shared by the Gemma and Whisper apps. */
+/** Small, host-neutral Rhino sandbox shared by Android agent apps. */
 class JavaScriptToolRuntime(
     private val timeoutMs: Long = 5_000,
     private val maxCodeChars: Int = 32_000,
@@ -20,10 +21,13 @@ class JavaScriptToolRuntime(
         if (source.isBlank()) return Result("JavaScript 代码为空。", false)
         if (source.length > maxCodeChars) return Result("代码超过 ${maxCodeChars} 字符限制。", false)
         val output = StringBuilder()
-        val failed = AtomicInteger()
+        val testsPassed = AtomicInteger()
+        val testsFailed = AtomicInteger()
         val started = System.nanoTime()
         fun log(value: String) {
-            if (output.length < maxOutputChars) output.append(value.take(maxOutputChars - output.length)).append('\n')
+            if (output.length < maxOutputChars) {
+                output.append(value.take(maxOutputChars - output.length)).append('\n')
+            }
         }
         val factory = object : ContextFactory() {
             override fun makeContext(): Context = super.makeContext().apply {
@@ -56,23 +60,56 @@ class JavaScriptToolRuntime(
                 val assertFn = object : BaseFunction() {
                     override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any>): Any {
                         if (args.isEmpty() || !Context.toBoolean(args[0])) {
-                            throw IllegalStateException(if (args.size > 1) Context.toString(args[1]) else null ?: "Assertion failed")
+                            throw IllegalStateException(if (args.size > 1) Context.toString(args[1]) else "Assertion failed")
                         }
                         return Undefined.instance
                     }
                 }
                 ScriptableObject.putProperty(scope, "assert", assertFn)
+                val testFn = object : BaseFunction() {
+                    override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any>): Any {
+                        val name = args.firstOrNull()?.let(Context::toString) ?: "unnamed test"
+                        val fn = args.getOrNull(1) as? Function
+                        if (fn == null) {
+                            testsFailed.incrementAndGet()
+                            log("FAIL $name: test callback must be a function")
+                            return Undefined.instance
+                        }
+                        try {
+                            fn.call(cx, scope, scope, emptyArray())
+                            testsPassed.incrementAndGet()
+                            log("PASS $name")
+                        } catch (e: Exception) {
+                            testsFailed.incrementAndGet()
+                            log("FAIL $name: ${e.message ?: e.javaClass.simpleName}")
+                        }
+                        return Undefined.instance
+                    }
+                }
+                ScriptableObject.putProperty(scope, "test", testFn)
                 val tools = cx.newObject(scope)
                 ScriptableObject.putProperty(tools, "assert", assertFn)
+                ScriptableObject.putProperty(tools, "test", testFn)
                 ScriptableObject.putProperty(tools, "now", object : BaseFunction() {
                     override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any>): Any =
                         System.currentTimeMillis().toDouble()
+                })
+                ScriptableObject.putProperty(tools, "randomInt", object : BaseFunction() {
+                    override fun call(cx: Context, scope: Scriptable, thisObj: Scriptable, args: Array<out Any>): Any {
+                        val min = args.getOrNull(0)?.let { Context.toNumber(it).toInt() } ?: 0
+                        val max = args.getOrNull(1)?.let { Context.toNumber(it).toInt() } ?: 100
+                        require(max >= min) { "randomInt: max must be >= min" }
+                        return min + (Math.random() * (max - min + 1)).toInt()
+                    }
                 })
                 ScriptableObject.putProperty(scope, "tools", tools)
                 val result = cx.evaluateString(scope, source, "<android-agent-tool>", 1, null)
                 if (result !== Undefined.instance) log("返回值: ${Context.toString(result)}")
             }
-            Result(output.toString().ifBlank { "JavaScript 执行成功（无输出）。" }, failed.get() == 0)
+            if (testsPassed.get() + testsFailed.get() > 0) {
+                log("测试汇总: ${testsPassed.get()} 通过，${testsFailed.get()} 失败")
+            }
+            Result(output.toString().ifBlank { "JavaScript 执行成功（无输出）。" }, testsFailed.get() == 0)
         } catch (e: Exception) {
             log("执行错误: ${e.message ?: e.javaClass.simpleName}")
             Result(output.toString().ifBlank { "执行错误: ${e.message ?: e.javaClass.simpleName}" }, false)
