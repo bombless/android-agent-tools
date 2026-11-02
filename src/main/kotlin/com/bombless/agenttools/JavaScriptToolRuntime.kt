@@ -23,7 +23,7 @@ class JavaScriptToolRuntime(
         val failed = AtomicInteger()
         val started = System.nanoTime()
         fun log(value: String) {
-            if (output.length < maxOutputChars) output.append(value.take(maxOutputChars - output.length)).append('\\n')
+            if (output.length < maxOutputChars) output.append(value.take(maxOutputChars - output.length)).append('\n')
         }
         val factory = object : ContextFactory() {
             override fun makeContext(): Context = super.makeContext().apply {
